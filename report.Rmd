@@ -1,0 +1,449 @@
+---
+title: "Analysis of the C02 Emissions Dataset "
+author: 
+ - "Saptarshi Chowdhury"
+ - "Subhajit Karmakar" 
+ - "Swastik Bhowmick"
+
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      fig.height = 5,
+                      fig.width = 10)
+```
+
+
+## Dataset
+Here we have worked on a dataset compiled over a period of 7 years that captures the details of how CO2 emissions by a vehicle can vary with the different features, taken from <https://www.kaggle.com/datasets/debajyotipodder/co2-emission-by-vehicles>. 
+
+We first call the dataset and the necessary libraries.
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(ggcorrplot)
+library(gridExtra)
+library(car)
+library(sets)
+library(glue)
+library(magrittr)
+
+
+d <- read_csv("D:/Projects/Self Project/3/CO2 Emissions_Canada.csv",
+              show_col_types = F)
+```
+
+## Objective 
+Prediction of $\small \text{CO}_2$ emission by a vehicle using multiple linear regression. 
+
+
+## Data description
+These are the features in the dataset.
+```{r}
+glimpse(d)
+```
+
+To know about the detailed description about the features, one can refer to the above link.
+
+
+## Exploratory Data Analysis
+
+Firstly, we check for missing values in the dataset. 
+```{r}
+d %>% is.na() %>% sum()
+```
+
+**Comment:** There are no missing values in the data.
+
+```{r, message=FALSE, echo=FALSE}
+d %>% select(`CO2 Emissions(g/km)`) %>% 
+    as.data.frame() %>% 
+    ggplot(aes(`CO2 Emissions(g/km)`)) + 
+    geom_histogram(aes(y = after_stat(density)),
+                   fill = 'lightgreen', colour = 'black') +
+    stat_function(fun = dnorm, args = list(mean(d$`CO2 Emissions(g/km)`), sd(d$`CO2 Emissions(g/km)`)), 
+                  colour = 'blue', lty = 2, lwd = 1) +
+    theme_minimal()
+```
+
+**Comment:** The distribution of $\small \text{CO}_2$ is moderately positively skewed. Also there appears to be some outliers in the right tail.
+
+### Correlation Heatmap
+```{r}
+# Correlation plot:
+d %>% select(where(is.numeric)) %>% 
+  cor() %>% ggcorrplot(lab = T, type = 'upper')
+```
+
+**Comment:** 
+Here we can see the target variable (`CO2 Emission(g/km)`) to be highly correlated with the other numerical features as well as high correlation within the numerical features, thus indicating the presence of multicollinearity.
+
+
+
+Now, we mention the frequency counts corresponding to unique values under each feature.
+```{r, echo=FALSE}
+d %>% select(where(is.character)) %>% 
+  colnames() -> char_var
+d$Cylinders <- as.factor(d$Cylinders)
+
+for(i in char_var){
+  d %>% pull(i) %>% unique() %>% length() -> l
+  glue('{v}: {c}', v = i, c = l) %>% print()
+}
+```
+
+
+
+```{r}
+# Frequency distribution of categorical variables:
+cat_plot <- function(var){
+  d %>% count({{var}}) %>% 
+    ggplot(aes(x = {{var}}, y = n)) +
+    geom_bar(stat = 'identity', width = 0.4, 
+             fill = 'magenta', colour = 'black') +
+    geom_text(aes(label = n, vjust = -0.3)) +
+    labs(y = 'Count') + theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90,
+                                     hjust = 1,
+                                     vjust = 0.5),
+          axis.title = element_text(face = 'bold',
+                                    size = 20))
+}
+
+cat_plot(Make)
+cat_plot(`Vehicle Class`)
+cat_plot(Transmission)
+cat_plot(`Fuel Type`)
+cat_plot(Cylinders)
+```
+**Comment:** One thing to be noted is that `model` has been omitted due to the large number of unique values.
+
+
+
+```{r}
+# Response ~ character variables:
+char_cont <- function(var){
+  d %>% ggplot(aes(x = {{var}}, y = `CO2 Emissions(g/km)`)) +
+    geom_boxplot(fill = 'lightblue', outlier.color = 'red',
+                 outlier.size = 1) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90,
+                                     hjust = 1,
+                                     vjust = 0.5),
+          axis.title = element_text(face = 'bold',
+                                    size = 20),
+          axis.text = element_text(face = 'bold'))
+}
+
+
+char_cont(`Fuel Type`)
+char_cont(`Vehicle Class`)
+char_cont(Transmission)
+char_cont(Make)
+char_cont(Cylinders)
+```
+
+**comment:** For further interpretation, one can look at the boxplots.
+
+
+```{r}
+# Response ~ continuous variables:
+cont_pair_plot <- function(res_var){
+  cont_plot <- function(var){
+    d %>% ggplot(aes(x = {{var}}, 
+                     y = {{res_var}})) +
+      geom_point(colour = 'darkviolet', size = 1) + theme_minimal() +
+      theme(axis.title = element_text(face = 'bold'))
+  }
+  
+  cont_plot(`Engine Size(L)`) -> p1
+  cont_plot(`Fuel Consumption City (L/100 km)`) -> p2
+  cont_plot(`Fuel Consumption Hwy (L/100 km)`) -> p3
+  cont_plot(`Fuel Consumption Comb (L/100 km)`) -> p4
+  cont_plot(`Fuel Consumption Comb (mpg)`) -> p5
+  
+  grid.arrange(p1,p2,p3,p4,p5, ncol = 3)
+}
+
+cont_pair_plot(`CO2 Emissions(g/km)`)
+```
+
+**Comment:** Except for `Fuel Consumption Comb (mpg)`, one can see a linear relationship between the target variable (`CO2 Emission(g/km)`) and the numerical features, with strong linear relationship particularly with `Fuel Consumption Comb (L/100 km)`.
+
+
+
+## Data Preprocessing
+
+#### Clubbing Categories
+
+Since we have a large number of unique values under the following features that is: `Transmission`,`Vehicle class`,`Make`, `Cylinder`, `Fuel Type`. Hence we have clubbed similar categories in each feature accordingly.
+
+
+```{r}
+  # Transmission:
+d %>% mutate(Transmission = case_when(
+  Transmission %in% paste0('A',4:10, by = '') ~ 'A',
+  Transmission %in% paste0('AM',5:9, by = '') ~ 'AM',
+  Transmission %in% paste0('AS',4:10, by = '') ~ 'AS',
+  Transmission %in% paste0('AV',c(6,7,8,10,''), by = '') ~ 'AV',
+  Transmission %in% paste0('M',5:7, by = '') ~ 'M',
+)) -> d
+
+  # Vehicle class:
+d %>% mutate(`Vehicle Class` = case_when(
+  `Vehicle Class` %in% c('COMPACT', 'MINICOMPACT', 
+                         'SUBCOMPACT', 'MID-SIZE', 'FULL-SIZE', 
+                         'TWO-SEATER') ~ 'Automobiles and Two-Seater',
+  `Vehicle Class` %in% c('SUV - SMALL', 'SUV - STANDARD') ~ 'SUV',
+  `Vehicle Class` %in% c('PICKUP TRUCK - SMALL', 
+                         'PICKUP TRUCK - STANDARD') ~ 'Pickup Truck',
+  `Vehicle Class` %in% c('STATION WAGON - SMALL', 
+                         'STATION WAGON - MID-SIZE') ~ 'Station Wagons',
+  `Vehicle Class` %in% c('VAN - CARGO', 'VAN - PASSENGER', 
+                        'MINIVAN') ~ 'Vans',
+  `Vehicle Class` == 'SPECIAL PURPOSE VEHICLE' ~ 'Special Purpose Vehicles' 
+)) -> d
+
+  # Fuel Type:
+d$`Fuel Type`[d$`Fuel Type` %in% c('D','E','N')] <- 'D_E_N'
+
+  # Makes:
+d %>% mutate(Make = case_when(
+  Make %in% c('ASTON MARTIN', 'BENTLEY', 'BUGATTI', 
+              'FERRARI', 'LAMBORGHINI', 'MASERATI', 
+              'ROLLS-ROYCE') ~ 'Luxury',
+  Make %in% c('ALFA ROMEO', 'AUDI', 'BMW', 'CADILLAC', 
+              'INFINITI', 'JAGUAR', 'LAND ROVER', 'LEXUS', 
+              'MERCEDES-BENZ', 'PORSCHE') ~ 'Premium',
+  Make %in% c('ACURA', 'GENESIS', 'LINCOLN', 
+              'VOLVO') ~ 'Midrange',
+  Make %in% c('CHEVROLET', 'FORD', 'GMC', 'HONDA', 
+              'HYUNDAI', 'KIA', 'MAZDA', 'MITSUBISHI', 
+              'NISSAN', 'SUBARU', 'TOYOTA', 
+              'VOLKSWAGEN') ~ 'Mainstream',
+  Make %in% c('FIAT', 'MINI', 'SMART') ~ 'Entry Level',
+  Make %in% c('DODGE', 'RAM', 'SRT', 'SCION', 
+              'SUBARU', 'VOLKSWAGEN') ~ 'Performance',
+  Make %in% c('BUICK','CHRYSLER','JEEP') ~ 'Others'
+)) -> d
+
+  # Model drop:
+d %>% select(-Model) -> d
+
+  # Cylinders:
+d %>% mutate(Cylinders = case_when(
+  Cylinders %in% 3:4 ~ '<5',
+  Cylinders %in% 5:6 ~ '5-6',
+  Cylinders %in% 8:16 ~ '>6'
+)) -> d
+
+
+knitr::kable(head(d, 4), caption = "First 4 rows of the new dataset after the above manipulation")
+```
+
+
+#### Transformation of Response variable
+Since the distribution of the response variable is moderately positively skewed, hence we have done `log`-transformation on it in order to make it symmetric so as to satisfy the normality assumption.
+
+```{r, message=FALSE}
+d %>% mutate(`CO2 Emissions(g/km) (log)` = 
+               log(`CO2 Emissions(g/km)`)) -> d
+
+d %>% select(`CO2 Emissions(g/km) (log)`) %>% 
+    as.data.frame() %>% 
+    ggplot(aes(`CO2 Emissions(g/km) (log)`)) + 
+    geom_histogram(aes(y = after_stat(density)),
+                   fill = 'lightgreen', colour = 'black') +
+    stat_function(fun = dnorm, args = list(mean(d$`CO2 Emissions(g/km) (log)`), sd(d$`CO2 Emissions(g/km) (log)`)), 
+                  colour = 'blue', lty = 2, lwd = 1) +
+    theme_minimal()
+```
+
+
+Now, after transforming the response variable, we have visualized the relationships between the transformed response variable with the numerical features.
+
+```{r}
+cont_pair_plot(`CO2 Emissions(g/km) (log)`)
+```
+
+
+Again, to make the relationships between the transformed response variable and the numerical features linear, we have done the following transformation.
+
+
+```{r}
+d %>% mutate(`Engine Size(L)` = log(`Engine Size(L)`),
+              `Fuel Consumption City (L/100 km)` = 
+                log(`Fuel Consumption City (L/100 km)`),
+              `Fuel Consumption Hwy (L/100 km)` = 
+                log(`Fuel Consumption Hwy (L/100 km)`),
+              `Fuel Consumption Comb (L/100 km)` = 
+                log(`Fuel Consumption Comb (L/100 km)`),
+              `Fuel Consumption Comb (mpg)` = 
+                log(`Fuel Consumption Comb (mpg)`)) -> d
+```
+
+## Model Building
+Before proceeding to fit a linear regression to the transformed dataset, we will first split it into **training data** and **testing data**.
+
+```{r}
+n = nrow(d); set.seed(42)
+rs <- sample(1:n, size = 0.8*n, replace = F)
+train_data <- d[rs,]
+test_data <- d[-rs,]
+
+
+glue('Dimension of Training data: {d1}',
+     'Dimension of Testing data: {d2}',
+     .sep = '\n', 
+     d1 = paste0(dim(train_data)[1], 'x', dim(train_data)[2]), 
+     d2 = paste0(dim(test_data)[1], 'x', dim(test_data)[2]))
+```
+
+
+Since the dataset had presence of multicollinearity, so it is evident that the training data will also have that. Hence we go for variance inflation factor (VIF) to get rid of multicollinearity. 
+
+```{r}
+l <- lm(`CO2 Emissions(g/km) (log)` ~ .
+        -`CO2 Emissions(g/km)`, data = train_data)
+
+car::vif(l)
+```
+**Comment:** Here we can see that `Fuel Consumption Comb (L/100 km)` has the highest VIF which obviously exceeds the threshold 10, hence we continue further by omitting it from the model.
+
+```{r}
+l <- lm(`CO2 Emissions(g/km) (log)` ~ .
+        -`CO2 Emissions(g/km)` - `Fuel Consumption Comb (L/100 km)`, 
+        data = train_data)
+
+car::vif(l)
+```
+**Comment:** Here we can see that `Fuel Consumption Comb (mpg)` has the highest VIF which obviously exceeds the threshold 10, hence we continue further by omitting it from the model.
+
+
+```{r}
+l <- lm(`CO2 Emissions(g/km) (log)` ~ .
+        -`CO2 Emissions(g/km)` - `Fuel Consumption Comb (L/100 km)`-
+          `Fuel Consumption Comb (mpg)`, 
+        data = train_data)
+
+car::vif(l)
+```
+**Comment:** Here, we can see that all the features have VIF less than 5, hence we can continue with the dataset using the above features.
+
+
+**NOTE:** WE ARE JUST LOOKING AT THE FOURTH COLUMN FOR THE VALUES OF THE VIF.
+
+
+### Model Fitting
+Now, by the method of least squares, we fit a multiple linear regression model to the final transformed dataset and thus obtain the necessary performance metrics. 
+
+
+```{r}
+l <- lm(`CO2 Emissions(g/km) (log)` ~ .
+        -`CO2 Emissions(g/km)` - `Fuel Consumption Comb (L/100 km)`-
+          `Fuel Consumption Comb (mpg)`, 
+        data = train_data)
+
+# printing the summary of the fitted model
+summary(l)
+```
+
+**Comment:** From the summary table we can clearly conclude that all the predictors are statistically significant. Also, the $\small R^2$ value is equal to $\small 0.9489$ which means, proportion of the total variation in `CO2 Emissions(g/km) (log)` explained by the multiple linear regression of `CO2 Emissions(g/km) (log)` on the predictors is $\small 94.89\%$ which is pretty high.
+
+
+Now, let us have a look at the residual versus fit plot.
+
+```{r}
+train_data['Residuals'] <- l$residuals
+train_data['Emission (predicted) (log)'] <- l$fitted.values
+
+
+train_data %>% ggplot(aes(x = `Emission (predicted) (log)`,
+                           y = Residuals)) + 
+  geom_point(colour = 'darkgreen', size = 0.7) + 
+  geom_hline(yintercept = 0, lty = 2, colour = 'darkblue') +
+  theme_minimal()
+```
+
+**Comment:** From the above plot, we can clearly see that there is an outlier, hence we shall remove it and refit the model. 
+
+
+**Refitting the model:**
+
+```{r}
+train_data %>% 
+  filter(Residuals > -0.4) %>% 
+  select(-c(Residuals, `Emission (predicted) (log)`)) ->
+  train_data2
+
+l <- lm(`CO2 Emissions(g/km) (log)` ~ .
+        -`CO2 Emissions(g/km)` - `Fuel Consumption Comb (L/100 km)`-
+          `Fuel Consumption Comb (mpg)`, 
+        data = train_data2)
+
+s <- summary(l)
+
+glue('R^2 for the new model: {R1}',
+     'Adjusted R^2 for the new model: {R2}', .sep = '\n',
+     R1 = round(s$r.squared,4), R2 = round(s$adj.r.squared,4))
+```
+
+Now, let us have a look at the residual versus fit plot after removing the outlier and refitting the model.
+
+```{r}
+train_data2['Residuals'] <- l$residuals
+train_data2['Emission (predicted) (log)'] <- l$fitted.values
+
+
+train_data2 %>% ggplot(aes(x = `Emission (predicted) (log)`,
+                           y = Residuals)) + 
+  geom_point(colour = 'darkgreen', size = 0.7) + 
+  geom_hline(yintercept = 0, lty = 2, colour = 'darkblue') +
+  theme_minimal()
+```
+
+
+Let us use the testing data to check the performance of the model on unseen data.
+
+```{r}
+test_data['Emission (predicted) (log)'] <- predict(l,
+                                                   newdata = test_data,
+                                                   type = 'response')
+
+# residuals
+test_data['Residuals'] <- test_data$`CO2 Emissions(g/km) (log)` -
+  test_data$`Emission (predicted) (log)`
+
+# R^2
+r <- cor(test_data$`Emission (predicted) (log)`,
+    test_data$`CO2 Emissions(g/km) (log)`)^2
+r1 <- 1 - (1-r^2)*(nrow(test_data) - 1)/(nrow(test_data) - 9)
+
+
+glue('R^2 for the test data: {R1}',
+     'Adjusted R^2 for the test data: {R2}', .sep = '\n',
+     R1 = round(r, 4), R2 = round(r1, 4))
+```
+
+
+**Comment:** After checking the performance metrics on the testing data we can see that the value of $\small R^2$ has come out to be $\small 94.47\%$, which indicates that the model performs pretty well on tesing data and has no overfitting. 
+
+
+
+#### Distribution of the observed and the predicted values of `CO2 Emissions(g/km) (log)`
+
+```{r}
+test_data %>% select(`CO2 Emissions(g/km) (log)`, 
+                      `Emission (predicted) (log)`) %>% 
+  pivot_longer(everything(),
+               names_to = "Type", values_to = 'Values')%>%
+  ggplot(aes(Values, fill = Type, colour = Type)) + 
+  geom_density(alpha = 0.4) + theme_minimal()
+```
+
+**Comment:** Here, we can see that both the distributions that is of the observed values as well as the predicted values of the target variable (`CO2 Emissions(g/km) (log)`) merge with each other almost perfectly which indicates that the fit is really good.
+
+
+
+
+
